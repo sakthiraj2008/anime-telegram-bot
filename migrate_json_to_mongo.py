@@ -5,30 +5,27 @@ same schema the bot uses (see database.py docstring).
 Usage:
     python migrate_json_to_mongo.py path/to/your_database.json
 
-Expected/flexible JSON shape (a list of anime objects). Adjust the FIELD_MAP
-below if your existing JSON uses different key names — no other code needs
-to change.
+Handles two shapes for `seasons` / `episodes`:
+  - a list:            "seasons": [ {...}, {...} ]
+  - a dict keyed by number (like your real aot.json): "seasons": {"1": {...}, "2": {...}}
 
-Example input shape this script understands out of the box:
-[
-  {
-    "title": "Naruto",
-    "imdb": "tt0409591",
-    "poster": "https://.../poster.jpg",
-    "banner": "https://.../banner.jpg",
-    "description": "...",
-    "year": "2002",
-    "seasons": [
-      {
-        "season_number": 1,
-        "episodes": [
-          {"episode_number": 1, "title": "Enter Naruto", "video": "https://.../ep1.mp4"}
-        ]
-      }
-    ]
-  },
-  ...
-]
+Adjust FIELD_MAP below if your existing JSON uses different key names for
+top-level anime fields — no other code needs to change.
+
+This script expects one JSON file containing anime *metadata* (title,
+poster, banner, description, year, and optionally embedded seasons). If
+your episodes live in separate per-anime files (e.g. json/episodes/aot.json
+like your repo), merge each episodes file's "seasons" into the matching
+anime object's "seasons" key before running this — or send me both files
+and I'll write a merge step for your exact folder layout.
+
+Episode shape produced (matches what the bot/API use):
+{
+  "episode_number": 1,
+  "episodeTitle": "To You, in 2000 Years",
+  "servers": {"server1": "https://...", "server2": ""},
+  "added_at": <datetime>
+}
 """
 import sys
 import json
@@ -53,22 +50,37 @@ def _remap(obj: dict) -> dict:
     return {FIELD_MAP.get(k, k): v for k, v in obj.items()}
 
 
+def _iter_numbered(value):
+    """Yield (number, item) whether `value` is a list or a dict keyed by
+    stringified numbers (like your real seasons/episodes JSON)."""
+    if isinstance(value, dict):
+        for key in sorted(value.keys(), key=lambda k: int(k) if str(k).isdigit() else 0):
+            yield int(key) if str(key).isdigit() else key, value[key]
+    elif isinstance(value, list):
+        for i, item in enumerate(value, start=1):
+            yield i, item
+
+
 def _normalize_anime(raw: dict) -> dict:
     raw = _remap(raw)
     seasons = []
-    for s in raw.get("seasons", []):
+    for season_num, s in _iter_numbered(raw.get("seasons", {})):
         s = _remap(s)
         episodes = []
-        for e in s.get("episodes", []):
+        for ep_num, e in _iter_numbered(s.get("episodes", {})):
             e = _remap(e)
+            servers = e.get("servers", {})
             episodes.append({
-                "episode_number": int(e.get("episode_number", 0)),
-                "title": e.get("title", ""),
-                "video": e.get("video", e.get("url", "")),
+                "episode_number": int(e.get("episode_number", ep_num)),
+                "episodeTitle": e.get("episodeTitle", e.get("title", "")),
+                "servers": {
+                    "server1": servers.get("server1", e.get("video", "")),
+                    "server2": servers.get("server2", ""),
+                },
                 "added_at": datetime.now(timezone.utc),
             })
         seasons.append({
-            "season_number": int(s.get("season_number", 1)),
+            "season_number": int(s.get("season_number", season_num)),
             "episodes": episodes,
         })
 
@@ -78,6 +90,7 @@ def _normalize_anime(raw: dict) -> dict:
         "poster": raw.get("poster", ""),
         "banner": raw.get("banner", ""),
         "description": raw.get("description", ""),
+        "genres": raw.get("genres", []),
         "year": str(raw.get("year", "")),
         "created_at": datetime.now(timezone.utc),
         "seasons": seasons,
