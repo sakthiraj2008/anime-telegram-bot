@@ -47,6 +47,7 @@ async def create_anime(data: dict) -> str:
         "poster": data.get("poster", ""),
         "banner": data.get("banner", ""),
         "description": data.get("description", ""),
+        "genres": data.get("genres", []),
         "year": data.get("year", ""),
         "created_at": _now(),
         "seasons": [],
@@ -113,29 +114,43 @@ async def get_episodes(anime_id: str, season_number: int) -> list:
 
 
 async def add_episode(anime_id: str, season_number: int, episode_number: int,
-                       title: str, video: str) -> None:
+                       title: str, server1: str, server2: str = "") -> None:
     await ensure_season(anime_id, season_number)
 
-    # Replace episode if the same episode_number already exists (upsert-style),
-    # otherwise push a new one.
-    pull_result = await animes.update_one(
-        {"_id": ObjectId(anime_id), "seasons.season_number": season_number},
-        {"$pull": {"seasons.$.episodes": {"episode_number": episode_number}}},
-    )
-    await animes.update_one(
+    # Try updating an existing episode in place first (1 round trip).
+    update_result = await animes.update_one(
         {"_id": ObjectId(anime_id), "seasons.season_number": season_number},
         {
-            "$push": {
-                "seasons.$.episodes": {
-                    "episode_number": episode_number,
-                    "title": title,
-                    "video": video,
-                    "added_at": _now(),
-                }
+            "$set": {
+                "seasons.$[s].episodes.$[e].episodeTitle": title,
+                "seasons.$[s].episodes.$[e].servers": {
+                    "server1": server1,
+                    "server2": server2,
+                },
+                "seasons.$[s].episodes.$[e].added_at": _now(),
             }
         },
+        array_filters=[
+            {"s.season_number": season_number},
+            {"e.episode_number": episode_number},
+        ],
     )
-    _ = pull_result  # kept for clarity/debugging
+
+    if update_result.modified_count == 0:
+        # No existing episode matched the array filter -> it's new, push it.
+        await animes.update_one(
+            {"_id": ObjectId(anime_id), "seasons.season_number": season_number},
+            {
+                "$push": {
+                    "seasons.$.episodes": {
+                        "episode_number": episode_number,
+                        "episodeTitle": title,
+                        "servers": {"server1": server1, "server2": server2},
+                        "added_at": _now(),
+                    }
+                }
+            },
+        )
 
 
 async def delete_episode(anime_id: str, season_number: int, episode_number: int) -> None:
