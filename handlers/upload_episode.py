@@ -7,8 +7,9 @@
    with "➕ Add Episode" at the bottom
 4. "➕ New Season" -> ask season number -> creates it -> shows its (empty)
    episode list
-5. "➕ Add Episode" -> ask episode number -> title -> video -> saved to
-   MongoDB -> episode list is refreshed so you can keep adding
+5. "➕ Add Episode" -> ask episode number -> title -> server1 URL ->
+   server2 URL (or `-` to skip) -> saved to MongoDB -> episode list is
+   refreshed so you can keep adding
 """
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,7 +21,7 @@ import database as db
 from utils import is_admin
 
 (CHOOSING_ANIME, MANAGING_SEASON, ADD_SEASON_NUM,
- ADD_EP_NUM, ADD_EP_TITLE, ADD_EP_VIDEO) = range(6)
+ ADD_EP_NUM, ADD_EP_TITLE, ADD_EP_SERVER1, ADD_EP_SERVER2) = range(7)
 
 
 # ------------------------------------------------------------- rendering ----
@@ -58,7 +59,7 @@ async def _render_episode_list(anime_id: str, anime_title: str, season_number: i
     for ep in episodes:
         rows.append([
             InlineKeyboardButton(
-                f"Ep {ep['episode_number']} - {ep['title']}",
+                f"Ep {ep['episode_number']} - {ep.get('episodeTitle', ep.get('title',''))}",
                 callback_data=f"noop",
             ),
             InlineKeyboardButton(
@@ -203,27 +204,29 @@ async def get_episode_number(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def get_episode_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["upload_ctx"]["episode_title"] = update.message.text.strip()
     await update.message.reply_text(
-        "Now send the *video* — upload a video/document, or paste a video URL:",
+        "Send the *server 1* video URL:",
         parse_mode="Markdown",
     )
-    return ADD_EP_VIDEO
+    return ADD_EP_SERVER1
 
 
-async def get_episode_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.video:
-        video_ref = update.message.video.file_id
-    elif update.message.document:
-        video_ref = update.message.document.file_id
-    elif update.message.text:
-        video_ref = update.message.text.strip()
-    else:
-        await update.message.reply_text("Please send a video, document, or URL.")
-        return ADD_EP_VIDEO
+async def get_episode_server1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["upload_ctx"]["server1"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Send the *server 2* video URL, or `-` to skip:",
+        parse_mode="Markdown",
+    )
+    return ADD_EP_SERVER2
+
+
+async def get_episode_server2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    server2 = "" if text == "-" else text
 
     ctx = context.user_data["upload_ctx"]
     await db.add_episode(
         ctx["anime_id"], ctx["season_number"],
-        ctx["episode_number"], ctx["episode_title"], video_ref,
+        ctx["episode_number"], ctx["episode_title"], ctx["server1"], server2,
     )
     await update.message.reply_text(
         f"✅ Episode {ctx['episode_number']} saved to MongoDB."
@@ -282,11 +285,11 @@ def build_upload_episode_handler() -> ConversationHandler:
             ADD_EP_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_episode_title)
             ],
-            ADD_EP_VIDEO: [
-                MessageHandler(
-                    (filters.TEXT | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
-                    get_episode_video,
-                )
+            ADD_EP_SERVER1: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_episode_server1)
+            ],
+            ADD_EP_SERVER2: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_episode_server2)
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
